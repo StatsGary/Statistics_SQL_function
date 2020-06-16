@@ -1,15 +1,22 @@
-DECLARE
-    @X          FLOAT = 1.5     -- Point at which function is to be evaluated
-    ,@Mean      FLOAT = 2.      -- Mean of the Normal Distribution
-    ,@StdDev    FLOAT = 0.5     -- Standard Deviation of the Normal Distribution
-;
-
+CREATE FUNCTION dbo.Excel_NORM_DIST
+-- Excel Normal Distribution - Returns either:
+--  Probability Density Function (PDF) or 
+--  Cumulative Distribution Function (CDF)
+(
+    @X          FLOAT   -- Point at which function is to be evaluated
+    ,@Mean      FLOAT   -- Mean of the Normal Distribution
+    ,@StdDev    FLOAT   -- Standard Deviation of the Normal Distribution
+    ,@CumDist   TINYINT -- =0 for Probability Density, =1 for Cumulative Density
+    ,@Intervals INT = NULL
+) 
+RETURNS TABLE WITH SCHEMABINDING
+RETURN
 WITH CalculateIntervals AS
 (
-    -- Total intervals (about 5 per standard deviation)
-    SELECT Intervals = 5 * ABS(@Mean - @X) / @StdDev
+    -- Total intervals (default is about 100 per standard deviation)
+    SELECT Intervals = ISNULL(@Intervals, 100) * ABS(@Mean - @X) / @StdDev
         -- Number of intervals per standard deviation
-        ,Interval    = 5
+        ,Interval    = ISNULL(@Intervals, 100)
 ), 
     Tally (n) AS
 (
@@ -21,28 +28,86 @@ WITH CalculateIntervals AS
     CROSS JOIN (VALUES(0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) c(n)
     CROSS JOIN (VALUES(0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) d(n)
 )
-SELECT X = @X
-    ,Mean = @Mean
-    ,StdDev = @StdDev
-    ,Intervals 
-    ,n
-    ,Pos1
-    ,Pos2
-    ,Width
-    ,Height = AvgX
-    --    Width x Height = NPDF(AvgX)
-    ,Area=Width * e.[NPDF(X)]
-FROM CalculateIntervals a
-CROSS JOIN Tally b
-CROSS APPLY
+-- PDF 
+SELECT X, Mean, StdDev, [F(X)]=[NPDF(X)]
+FROM
 (
-    SELECT Pos1     = @Mean + (@StdDev/Interval) * (n - 1.) * SIGN(@X - @Mean)
-        ,Pos2       = @Mean + (@StdDev/Interval) * (n + 0.) * SIGN(@X - @Mean)
-        ,Width      = ABS(@Mean - @X)/Intervals
-) c
-CROSS APPLY
+    SELECT X        = @X
+        ,Mean       = @Mean
+        ,StdDev     = @StdDev
+        ,[NPDF(X)]
+    FROM dbo.NORMAL_PDF(@X, @Mean, @StdDev)
+) a
+WHERE @CumDist = 0
+UNION ALL
+-- CDF where X = mean
+SELECT X        = @X
+    ,Mean       = @Mean
+    ,StdDev     = @StdDev
+    ,[CDF(X)]   = 0.5
+WHERE @CumDist = 1 AND @X = @Mean
+UNION ALL
+-- CDF where X  mean
+SELECT X, Mean, StdDev, [CDF(X)]
+FROM
 (
-    -- Cheat the rectangle's height - make it the average of Pos1 and Pos2
-    SELECT AvgX = 0.5 * (Pos1 + Pos2)
-) d
-CROSS APPLY dbo.NORMAL_PDF(AvgX, @Mean, @StdDev) e;
+    SELECT X        = @X
+        ,Mean       = @Mean
+        ,StdDev     = @StdDev
+        --                  SUM the rectangles
+        ,[CDF(X)]   = 0.5 + SUM(
+                                -- Add to or remove from CDF at mean (0.5)
+                                SIGN(@X - @Mean) *
+                                -- Width x Height = NPDF(AvgX) 
+                                Width * d.[NPDF(X)]
+                                )
+    FROM CalculateIntervals a
+    CROSS JOIN Tally b
+    CROSS APPLY
+    (
+        SELECT Pos1     = @Mean + (@StdDev/Interval) * (n - 1.) * SIGN(@X - @Mean)
+            ,Pos2       = @Mean + (@StdDev/Interval) * (n + 0.) * SIGN(@X - @Mean)
+            ,Width      = ABS(@Mean - @X)/Intervals
+    ) c
+    --                         -- Average height --
+    CROSS APPLY dbo.NORMAL_PDF(0.5 * (Pos1 + Pos2), @Mean, @StdDev) d
+) a
+WHERE @CumDist = 1 AND @X  @Mean;
+GO
+
+WITH SampleData (X, Mean, StdDev) AS
+(
+    SELECT -1,2,0.5
+    UNION ALL SELECT -0.5,2,0.5
+    UNION ALL SELECT 0,2,0.5
+    UNION ALL SELECT 0.5,2,0.5
+    UNION ALL SELECT 1,2,0.5
+    UNION ALL SELECT 1.5,2,0.5
+    UNION ALL SELECT 2,2,0.5
+    UNION ALL SELECT 2.5,2,0.5
+    UNION ALL SELECT 3,2,0.5
+    UNION ALL SELECT 3.5,2,0.5
+    UNION ALL SELECT 4,2,0.5
+    UNION ALL SELECT 2.33,10,5
+    UNION ALL SELECT 4.22,10,5
+    UNION ALL SELECT 5.1,10,5
+    UNION ALL SELECT 8.2,10,5
+    UNION ALL SELECT 10,10,5
+    UNION ALL SELECT 11.5,10,5
+    UNION ALL SELECT 12.6,10,5
+    UNION ALL SELECT 16.8,10,5
+    UNION ALL SELECT 22.5,10,5
+)
+SELECT a.X, a.Mean, a.StdDev
+    ,[NPDF(X)]  = c.[F(X)]
+    ,[SNPDF(X)] = b.[SNPDF(X)]
+    ,[CDF(X)]   = d.[F(X)]
+FROM SampleData a
+-- Use NORMAL_PDF to return PDF for standard normal distribution
+CROSS APPLY dbo.NORMAL_PDF(a.X, a.Mean, a.StdDev) b
+-- Use Excel_NORM_DIST to return PDF for general normal distribution
+CROSS APPLY dbo.Excel_NORM_DIST(a.X, a.Mean, a.StdDev, 0, DEFAULT) c
+-- Use Excel_NORM_DIST to return CDF for a general normal distribution
+CROSS APPLY dbo.Excel_NORM_DIST(a.X, a.Mean, a.StdDev, 1
+    -- Increase the accuracy by specifying a larger number for fifth parameter
+    ,CASE a.Mean WHEN 10 THEN 500 ELSE 100 END) d;
