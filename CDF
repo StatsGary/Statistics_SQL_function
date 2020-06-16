@@ -1,0 +1,48 @@
+DECLARE
+    @X          FLOAT = 1.5     -- Point at which function is to be evaluated
+    ,@Mean      FLOAT = 2.      -- Mean of the Normal Distribution
+    ,@StdDev    FLOAT = 0.5     -- Standard Deviation of the Normal Distribution
+;
+
+WITH CalculateIntervals AS
+(
+    -- Total intervals (about 5 per standard deviation)
+    SELECT Intervals = 5 * ABS(@Mean - @X) / @StdDev
+        -- Number of intervals per standard deviation
+        ,Interval    = 5
+), 
+    Tally (n) AS
+(
+    -- Up to 10,000 row tally table
+    SELECT TOP (SELECT CAST(Intervals AS INT) FROM CalculateIntervals)
+        ROW_NUMBER() OVER (ORDER BY (SELECT NULL))
+    FROM (VALUES(0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) a(n)
+    CROSS JOIN (VALUES(0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) b(n)
+    CROSS JOIN (VALUES(0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) c(n)
+    CROSS JOIN (VALUES(0),(0),(0),(0),(0),(0),(0),(0),(0),(0)) d(n)
+)
+SELECT X = @X
+    ,Mean = @Mean
+    ,StdDev = @StdDev
+    ,Intervals 
+    ,n
+    ,Pos1
+    ,Pos2
+    ,Width
+    ,Height = AvgX
+    --    Width x Height = NPDF(AvgX)
+    ,Area=Width * e.[NPDF(X)]
+FROM CalculateIntervals a
+CROSS JOIN Tally b
+CROSS APPLY
+(
+    SELECT Pos1     = @Mean + (@StdDev/Interval) * (n - 1.) * SIGN(@X - @Mean)
+        ,Pos2       = @Mean + (@StdDev/Interval) * (n + 0.) * SIGN(@X - @Mean)
+        ,Width      = ABS(@Mean - @X)/Intervals
+) c
+CROSS APPLY
+(
+    -- Cheat the rectangle's height - make it the average of Pos1 and Pos2
+    SELECT AvgX = 0.5 * (Pos1 + Pos2)
+) d
+CROSS APPLY dbo.NORMAL_PDF(AvgX, @Mean, @StdDev) e;
